@@ -16,6 +16,19 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
+async function fetchYouTubeTitle(youtubeUrl: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(youtubeUrl)}&format=json`
+    );
+    if (!res.ok) return undefined;
+    const data = await res.json();
+    return data.title as string | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function fetchTranscript(youtubeUrl: string): Promise<TranscriptResult> {
   const videoId = extractVideoId(youtubeUrl);
   if (!videoId) {
@@ -27,22 +40,25 @@ export async function fetchTranscript(youtubeUrl: string): Promise<TranscriptRes
     throw new Error("SUPADATA_API_KEY is not set");
   }
 
-  const res = await fetch(
-    `https://api.supadata.ai/v1/youtube/transcript?url=${encodeURIComponent(youtubeUrl)}&text=true`,
-    { headers: { "x-api-key": apiKey } }
-  );
+  const [transcriptRes, title] = await Promise.all([
+    fetch(
+      `https://api.supadata.ai/v1/youtube/transcript?url=${encodeURIComponent(youtubeUrl)}&text=true`,
+      { headers: { "x-api-key": apiKey } }
+    ),
+    fetchYouTubeTitle(youtubeUrl),
+  ]);
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Supadata transcript fetch failed (${res.status}): ${body}`);
+  if (!transcriptRes.ok) {
+    const body = await transcriptRes.text();
+    throw new Error(`Supadata transcript fetch failed (${transcriptRes.status}): ${body}`);
   }
 
-  const data = await res.json();
+  const data = await transcriptRes.json();
   const text: string = typeof data === "string" ? data : data.content ?? data.text ?? JSON.stringify(data);
 
   if (!text) {
     throw new Error("Supadata returned empty transcript");
   }
 
-  return { text, videoId };
+  return { text, title, videoId };
 }
