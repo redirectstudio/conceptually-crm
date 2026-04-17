@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
 
   const db = getServiceClient();
   let query = db
-    .from("contacts")
+    .from("crm_contacts")
     .select("*")
     .order("readiness_score", { ascending: false })
     .order("created_at", { ascending: false });

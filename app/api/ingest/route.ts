@@ -12,7 +12,7 @@ function getServiceClient() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { youtube_url } = await req.json();
+    const { youtube_url, manual_transcript } = await req.json();
 
     if (!youtube_url) {
       return NextResponse.json({ error: "youtube_url is required" }, { status: 400 });
@@ -20,9 +20,8 @@ export async function POST(req: NextRequest) {
 
     const db = getServiceClient();
 
-    // Create a processing job
     const { data: job, error: jobError } = await db
-      .from("processing_jobs")
+      .from("crm_jobs")
       .insert({ youtube_url, status: "processing" })
       .select()
       .single();
@@ -31,31 +30,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to create processing job" }, { status: 500 });
     }
 
-    // Step 1: Fetch transcript
-    let transcriptResult;
-    try {
-      transcriptResult = await fetchTranscript(youtube_url);
-    } catch (err) {
-      await db
-        .from("processing_jobs")
-        .update({ status: "failed", error_message: String(err) })
-        .eq("id", job.id);
-      return NextResponse.json(
-        { error: `Transcript fetch failed: ${err}` },
-        { status: 422 }
-      );
+    // Step 1: Get transcript — manual paste takes priority, then auto-fetch
+    let transcriptText: string;
+    let transcriptTitle: string | undefined;
+
+    if (manual_transcript?.trim()) {
+      transcriptText = manual_transcript.trim();
+    } else {
+      try {
+        const result = await fetchTranscript(youtube_url);
+        transcriptText = result.text;
+        transcriptTitle = result.title;
+      } catch (err) {
+        await db
+          .from("crm_jobs")
+          .update({ status: "failed", error_message: String(err) })
+          .eq("id", job.id);
+        return NextResponse.json(
+          { error: `Transcript fetch failed: ${err}` },
+          { status: 422 }
+        );
+      }
     }
 
     // Step 2: Claude extraction
     let extraction;
     try {
-      extraction = await extractProfileFromTranscript(
-        transcriptResult.text,
-        transcriptResult.title
-      );
+      extraction = await extractProfileFromTranscript(transcriptText, transcriptTitle);
     } catch (err) {
       await db
-        .from("processing_jobs")
+        .from("crm_jobs")
         .update({ status: "failed", error_message: String(err) })
         .eq("id", job.id);
       return NextResponse.json(
@@ -66,7 +70,7 @@ export async function POST(req: NextRequest) {
 
     // Step 3: Save contact
     const { data: contact, error: contactError } = await db
-      .from("contacts")
+      .from("crm_contacts")
       .insert({
         name: extraction.name,
         title: extraction.title,
@@ -84,8 +88,8 @@ export async function POST(req: NextRequest) {
         readiness_score: extraction.readiness_score,
         readiness_reasoning: extraction.readiness_reasoning,
         episode_url: youtube_url,
-        episode_title: transcriptResult.title || null,
-        transcript_raw: transcriptResult.text,
+        episode_title: transcriptTitle || null,
+        transcript_raw: transcriptText,
         outreach_status: "not_contacted",
         meeting_booked: false,
         converted: false,
@@ -95,7 +99,7 @@ export async function POST(req: NextRequest) {
 
     if (contactError) {
       await db
-        .from("processing_jobs")
+        .from("crm_jobs")
         .update({ status: "failed", error_message: contactError.message })
         .eq("id", job.id);
       return NextResponse.json({ error: "Failed to save contact" }, { status: 500 });
@@ -103,7 +107,7 @@ export async function POST(req: NextRequest) {
 
     // Mark job complete
     await db
-      .from("processing_jobs")
+      .from("crm_jobs")
       .update({ status: "complete", contact_id: contact.id })
       .eq("id", job.id);
 

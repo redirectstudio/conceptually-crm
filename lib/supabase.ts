@@ -15,7 +15,7 @@ export function getServiceClient() {
 
 export async function getContacts(): Promise<Contact[]> {
   const { data, error } = await supabase
-    .from("contacts")
+    .from("crm_contacts")
     .select("*")
     .order("readiness_score", { ascending: false })
     .order("created_at", { ascending: false });
@@ -25,7 +25,7 @@ export async function getContacts(): Promise<Contact[]> {
 
 export async function getContact(id: string): Promise<Contact | null> {
   const { data, error } = await supabase
-    .from("contacts")
+    .from("crm_contacts")
     .select("*")
     .eq("id", id)
     .single();
@@ -35,7 +35,7 @@ export async function getContact(id: string): Promise<Contact | null> {
 
 export async function updateContact(id: string, updates: Partial<Contact>): Promise<Contact> {
   const { data, error } = await supabase
-    .from("contacts")
+    .from("crm_contacts")
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq("id", id)
     .select()

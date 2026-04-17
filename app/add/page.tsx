@@ -4,65 +4,67 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-type Step = "idle" | "transcribing" | "analyzing" | "saving" | "done" | "error";
-
-const STEP_MESSAGES: Record<Step, string> = {
-  idle: "",
-  transcribing: "Fetching transcript from YouTube...",
-  analyzing: "Analyzing with Claude AI...",
-  saving: "Building profile...",
-  done: "Profile created.",
-  error: "",
-};
+type Step = "idle" | "transcribing" | "analyzing" | "saving" | "done" | "error" | "needs_transcript";
 
 export default function AddContact() {
   const router = useRouter();
   const [url, setUrl] = useState("");
   const [step, setStep] = useState<Step>("idle");
   const [error, setError] = useState("");
+  const [manualTranscript, setManualTranscript] = useState("");
 
   const isProcessing = step === "transcribing" || step === "analyzing" || step === "saving";
   const isValidUrl = url.includes("youtube.com") || url.includes("youtu.be");
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!url.trim() || isProcessing) return;
-
+  async function submit(useManual = false) {
     setError("");
-    setStep("transcribing");
 
-    // Simulate step progression for UX
-    const stepTimer1 = setTimeout(() => setStep("analyzing"), 4000);
-    const stepTimer2 = setTimeout(() => setStep("saving"), 12000);
+    if (!useManual) setStep("transcribing");
+    else setStep("analyzing");
+
+    const t1 = !useManual ? setTimeout(() => setStep("analyzing"), 4000) : null;
+    const t2 = setTimeout(() => setStep("saving"), useManual ? 3000 : 12000);
 
     try {
+      const body: Record<string, string> = { youtube_url: url.trim() };
+      if (useManual && manualTranscript.trim()) body.manual_transcript = manualTranscript.trim();
+
       const res = await fetch("/api/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ youtube_url: url.trim() }),
+        body: JSON.stringify(body),
       });
 
-      clearTimeout(stepTimer1);
-      clearTimeout(stepTimer2);
+      if (t1) clearTimeout(t1);
+      clearTimeout(t2);
 
       const data = await res.json();
 
       if (!res.ok) {
+        // Transcript fetch failed — offer manual paste
+        if (data.error?.includes("transcript") || data.error?.includes("caption")) {
+          setStep("needs_transcript");
+          return;
+        }
         setStep("error");
-        setError(data.error ?? "Something went wrong. Please try again.");
+        setError(data.error ?? "Something went wrong.");
         return;
       }
 
       setStep("done");
-      setTimeout(() => {
-        router.push(`/contacts/${data.contact.id}`);
-      }, 800);
-    } catch (err) {
-      clearTimeout(stepTimer1);
-      clearTimeout(stepTimer2);
+      setTimeout(() => router.push(`/contacts/${data.contact.id}`), 800);
+    } catch {
+      if (t1) clearTimeout(t1);
+      clearTimeout(t2);
       setStep("error");
       setError("Network error — please try again.");
     }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!url.trim() || isProcessing) return;
+    submit(false);
   }
 
   return (
@@ -92,43 +94,66 @@ export default function AddContact() {
               id="url"
               type="url"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => { setUrl(e.target.value); if (step === "needs_transcript") setStep("idle"); }}
               placeholder="https://youtube.com/watch?v=..."
               disabled={isProcessing || step === "done"}
               className="w-full text-sm border border-gray-200 rounded-lg px-4 py-3 text-gray-900 placeholder-gray-300 focus:outline-none focus:border-gray-400 disabled:bg-gray-50 disabled:text-gray-400 transition-colors"
             />
           </div>
 
-          <button
-            type="submit"
-            disabled={!url.trim() || !isValidUrl || isProcessing || step === "done"}
-            className="w-full bg-black text-white text-sm font-medium py-3 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {isProcessing || step === "done" ? STEP_MESSAGES[step] : "Process Episode"}
-          </button>
+          {step !== "needs_transcript" && (
+            <button
+              type="submit"
+              disabled={!url.trim() || !isValidUrl || isProcessing || step === "done"}
+              className="w-full bg-black text-white text-sm font-medium py-3 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isProcessing ? "Processing..." : step === "done" ? "Profile created." : "Process Episode"}
+            </button>
+          )}
         </form>
 
-        {/* Progress indicator */}
+        {/* Progress */}
         {isProcessing && (
           <div className="mt-8 space-y-3">
-            <div className="flex items-center gap-3">
-              <StepDot active={step === "transcribing"} done={["analyzing", "saving"].includes(step)} />
-              <span className={`text-sm ${step === "transcribing" ? "text-gray-900 font-medium" : "text-gray-400"}`}>
-                Fetching transcript
-              </span>
+            {[
+              { label: "Fetching transcript", active: step === "transcribing", done: ["analyzing", "saving"].includes(step) },
+              { label: "Analyzing with Claude", active: step === "analyzing", done: step === "saving" },
+              { label: "Building profile", active: step === "saving", done: false },
+            ].map(({ label, active, done }) => (
+              <div key={label} className="flex items-center gap-3">
+                <StepDot active={active} done={done} />
+                <span className={`text-sm ${active ? "text-gray-900 font-medium" : "text-gray-400"}`}>{label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Manual transcript fallback */}
+        {step === "needs_transcript" && (
+          <div className="mt-6 space-y-4">
+            <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <p className="text-sm font-medium text-yellow-800">Captions disabled on this video</p>
+              <p className="text-xs text-yellow-700 mt-1">
+                Paste the transcript below — open the video on YouTube, click <strong>...</strong> → <strong>Show transcript</strong>, copy all, paste here.
+              </p>
             </div>
-            <div className="flex items-center gap-3">
-              <StepDot active={step === "analyzing"} done={step === "saving"} />
-              <span className={`text-sm ${step === "analyzing" ? "text-gray-900 font-medium" : "text-gray-400"}`}>
-                Analyzing with Claude
-              </span>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-2">Transcript</label>
+              <textarea
+                value={manualTranscript}
+                onChange={(e) => setManualTranscript(e.target.value)}
+                placeholder="Paste the full transcript here..."
+                rows={10}
+                className="w-full text-sm border border-gray-200 rounded-lg px-4 py-3 text-gray-700 placeholder-gray-300 focus:outline-none focus:border-gray-400 resize-none"
+              />
             </div>
-            <div className="flex items-center gap-3">
-              <StepDot active={step === "saving"} done={false} />
-              <span className={`text-sm ${step === "saving" ? "text-gray-900 font-medium" : "text-gray-400"}`}>
-                Building profile
-              </span>
-            </div>
+            <button
+              onClick={() => submit(true)}
+              disabled={!manualTranscript.trim() || isProcessing}
+              className="w-full bg-black text-white text-sm font-medium py-3 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isProcessing ? "Processing..." : "Build Profile from Transcript"}
+            </button>
           </div>
         )}
 
@@ -141,17 +166,14 @@ export default function AddContact() {
         {step === "error" && (
           <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-lg">
             <p className="text-sm text-red-600">{error}</p>
-            <button
-              onClick={() => { setStep("idle"); setError(""); }}
-              className="text-xs text-red-500 underline mt-2"
-            >
+            <button onClick={() => { setStep("idle"); setError(""); }} className="text-xs text-red-500 underline mt-2">
               Try again
             </button>
           </div>
         )}
 
         <p className="text-xs text-gray-400 mt-8">
-          Works with any YouTube video that has auto-generated or manual captions. Most Extraordinary Stories episodes qualify.
+          Auto-transcription works on most YouTube videos. For videos without captions, paste the transcript manually.
         </p>
       </main>
     </div>
@@ -160,8 +182,6 @@ export default function AddContact() {
 
 function StepDot({ active, done }: { active: boolean; done: boolean }) {
   if (done) return <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />;
-  if (active) return (
-    <span className="w-2 h-2 rounded-full bg-black shrink-0 animate-pulse" />
-  );
+  if (active) return <span className="w-2 h-2 rounded-full bg-black shrink-0 animate-pulse" />;
   return <span className="w-2 h-2 rounded-full bg-gray-200 shrink-0" />;
 }

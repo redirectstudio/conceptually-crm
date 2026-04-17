@@ -1,7 +1,18 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import type { ClaudeExtraction } from "./types";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: process.env.OPENROUTER_API_KEY!,
+  defaultHeaders: {
+    "HTTP-Referer": "https://conceptually-crm.netlify.app",
+    "X-Title": "Conceptually CRM",
+  },
+});
+
+// Swap this to any model OpenRouter supports:
+// "anthropic/claude-sonnet-4-6", "openai/gpt-4o", "google/gemini-2.0-flash", etc.
+const MODEL = "anthropic/claude-sonnet-4-6";
 
 const SYSTEM_PROMPT = `You are analyzing a podcast interview transcript to build a CRM profile for the guest.
 
@@ -45,23 +56,16 @@ export async function extractProfileFromTranscript(
     ? `Episode: "${episodeTitle}"\n\nTranscript:\n${transcript}`
     : `Transcript:\n${transcript}`;
 
-  const message = await client.messages.create({
-    model: "claude-sonnet-4-6",
+  const response = await client.chat.completions.create({
+    model: MODEL,
     max_tokens: 2048,
-    system: SYSTEM_PROMPT,
     messages: [
-      {
-        role: "user",
-        content: userContent,
-      },
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userContent },
     ],
   });
 
-  const text = message.content[0].type === "text" ? message.content[0].text : "";
-
-  // Strip markdown code blocks if Claude wrapped the JSON
+  const text = response.choices[0]?.message?.content ?? "";
   const cleaned = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim();
-
-  const parsed = JSON.parse(cleaned) as ClaudeExtraction;
-  return parsed;
+  return JSON.parse(cleaned) as ClaudeExtraction;
 }
