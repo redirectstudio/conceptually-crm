@@ -59,13 +59,21 @@ export default function Dashboard() {
             <h1 className="text-lg font-semibold tracking-tight text-gray-900">Conceptually CRM</h1>
             <p className="text-xs text-gray-400 mt-0.5">Extraordinary podcast pipeline</p>
           </div>
-          <Link
-            href="/add"
-            className="inline-flex items-center gap-1.5 bg-black text-white text-sm font-medium px-4 py-2 rounded-md hover:bg-gray-800 transition-colors"
-          >
-            <span className="text-base leading-none">+</span>
-            Add Contact
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/bulk"
+              className="inline-flex items-center gap-1.5 bg-white text-gray-700 text-sm font-medium px-4 py-2 rounded-md border border-gray-200 hover:border-gray-400 transition-colors"
+            >
+              Bulk Upload
+            </Link>
+            <Link
+              href="/add"
+              className="inline-flex items-center gap-1.5 bg-black text-white text-sm font-medium px-4 py-2 rounded-md hover:bg-gray-800 transition-colors"
+            >
+              <span className="text-base leading-none">+</span>
+              Add Contact
+            </Link>
+          </div>
         </div>
       </header>
 
