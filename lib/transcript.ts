@@ -1,5 +1,3 @@
-import { YoutubeTranscript } from "youtube-transcript";
-
 export interface TranscriptResult {
   text: string;
   title?: string;
@@ -24,13 +22,27 @@ export async function fetchTranscript(youtubeUrl: string): Promise<TranscriptRes
     throw new Error("Invalid YouTube URL — could not extract video ID");
   }
 
-  try {
-    const segments = await YoutubeTranscript.fetchTranscript(videoId);
-    const text = segments.map((s) => s.text).join(" ");
-    return { text, videoId };
-  } catch (err) {
-    throw new Error(
-      `Could not fetch transcript for video ${videoId}. The video may not have captions enabled. Error: ${err}`
-    );
+  const apiKey = process.env.SUPADATA_API_KEY;
+  if (!apiKey) {
+    throw new Error("SUPADATA_API_KEY is not set");
   }
+
+  const res = await fetch(
+    `https://api.supadata.ai/v1/youtube/transcript?url=${encodeURIComponent(youtubeUrl)}&text=true`,
+    { headers: { "x-api-key": apiKey } }
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Supadata transcript fetch failed (${res.status}): ${body}`);
+  }
+
+  const data = await res.json();
+  const text: string = typeof data === "string" ? data : data.content ?? data.text ?? JSON.stringify(data);
+
+  if (!text) {
+    throw new Error("Supadata returned empty transcript");
+  }
+
+  return { text, videoId };
 }
