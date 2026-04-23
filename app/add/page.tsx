@@ -3,9 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { pollJob } from "@/lib/supabase-browser";
 
-type Step = "idle" | "transcribing" | "analyzing" | "saving" | "done" | "error" | "needs_transcript";
+type Step = "idle" | "processing" | "done" | "error" | "needs_transcript";
 
 export default function AddContact() {
   const router = useRouter();
@@ -14,12 +13,12 @@ export default function AddContact() {
   const [error, setError] = useState("");
   const [manualTranscript, setManualTranscript] = useState("");
 
-  const isProcessing = step === "transcribing" || step === "analyzing" || step === "saving";
+  const isProcessing = step === "processing";
   const isValidUrl = url.includes("youtube.com") || url.includes("youtu.be");
 
   async function submit(useManual = false) {
     setError("");
-    setStep(useManual ? "analyzing" : "transcribing");
+    setStep("processing");
 
     try {
       const body: Record<string, string> = { youtube_url: url.trim() };
@@ -39,54 +38,17 @@ export default function AddContact() {
           setError(data.error);
           return;
         }
+        if (res.status === 422 && data.no_captions) {
+          setStep("needs_transcript");
+          return;
+        }
         setStep("error");
         setError(data.error ?? "Something went wrong.");
         return;
       }
 
-      const { jobId } = data;
-
-      // Poll Supabase for job completion
-      let attempts = 0;
-      const maxAttempts = 300; // 10 min at 2s intervals
-
-      const poll = async (): Promise<void> => {
-        if (attempts >= maxAttempts) {
-          setStep("error");
-          setError("Still processing in the background — check the dashboard in a few minutes for your new contact.");
-          return;
-        }
-
-        attempts++;
-        const job = await pollJob(jobId);
-
-        if (job.status === "processing") {
-          setStep("analyzing");
-        }
-
-        if (job.status === "complete" && job.contact_id) {
-          setStep("done");
-          setTimeout(() => router.push(`/contacts/${job.contact_id}`), 800);
-          return;
-        }
-
-        if (job.status === "failed") {
-          const msg = job.error_message ?? "Processing failed.";
-          if (msg.toLowerCase().includes("transcript") || msg.toLowerCase().includes("caption")) {
-            setStep("needs_transcript");
-          } else {
-            setStep("error");
-            setError(msg);
-          }
-          return;
-        }
-
-        // Still pending or processing — check again in 2s
-        await new Promise((r) => setTimeout(r, 2000));
-        return poll();
-      };
-
-      await poll();
+      setStep("done");
+      setTimeout(() => router.push(`/contacts/${data.contact_id}`), 800);
     } catch {
       setStep("error");
       setError("Network error — please try again.");
@@ -126,7 +88,10 @@ export default function AddContact() {
               id="url"
               type="url"
               value={url}
-              onChange={(e) => { setUrl(e.target.value); if (step === "needs_transcript") setStep("idle"); }}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                if (step === "needs_transcript" || step === "error") setStep("idle");
+              }}
               placeholder="https://youtube.com/watch?v=..."
               disabled={isProcessing || step === "done"}
               className="w-full text-sm border border-gray-200 rounded-lg px-4 py-3 text-gray-900 placeholder-gray-300 focus:outline-none focus:border-gray-400 disabled:bg-gray-50 disabled:text-gray-400 transition-colors"
@@ -145,17 +110,9 @@ export default function AddContact() {
         </form>
 
         {isProcessing && (
-          <div className="mt-8 space-y-3">
-            {[
-              { label: "Fetching transcript", active: step === "transcribing", done: ["analyzing", "saving"].includes(step) },
-              { label: "Analyzing with Claude", active: step === "analyzing", done: step === "saving" },
-              { label: "Building profile", active: step === "saving", done: false },
-            ].map(({ label, active, done }) => (
-              <div key={label} className="flex items-center gap-3">
-                <StepDot active={active} done={done} />
-                <span className={`text-sm ${active ? "text-gray-900 font-medium" : "text-gray-400"}`}>{label}</span>
-              </div>
-            ))}
+          <div className="mt-8 flex items-center gap-3 text-sm text-gray-500">
+            <span className="w-2 h-2 rounded-full bg-black animate-pulse shrink-0" />
+            Transcribing and analyzing — this takes 15–25 seconds...
           </div>
         )}
 
@@ -196,7 +153,10 @@ export default function AddContact() {
         {step === "error" && (
           <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-lg">
             <p className="text-sm text-red-600">{error}</p>
-            <button onClick={() => { setStep("idle"); setError(""); }} className="text-xs text-red-500 underline mt-2">
+            <button
+              onClick={() => { setStep("idle"); setError(""); }}
+              className="text-xs text-red-500 underline mt-2"
+            >
               Try again
             </button>
           </div>
@@ -208,10 +168,4 @@ export default function AddContact() {
       </main>
     </div>
   );
-}
-
-function StepDot({ active, done }: { active: boolean; done: boolean }) {
-  if (done) return <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />;
-  if (active) return <span className="w-2 h-2 rounded-full bg-black shrink-0 animate-pulse" />;
-  return <span className="w-2 h-2 rounded-full bg-gray-200 shrink-0" />;
 }

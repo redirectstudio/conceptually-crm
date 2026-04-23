@@ -2,13 +2,11 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { pollJob, getBrowserClient } from "@/lib/supabase-browser";
 
-type JobStatus = "pending" | "processing" | "done" | "error" | "background";
+type JobStatus = "pending" | "processing" | "done" | "error" | "needs_transcript";
 
 interface Job {
   url: string;
-  jobId: string | null;
   status: JobStatus;
   contactId?: string;
   contactName?: string;
@@ -30,100 +28,54 @@ export default function BulkUpload() {
 
   const validCount = parseUrls().length;
   const started = jobs.length > 0;
-  const allDone = started && jobs.every((j) => j.status === "done" || j.status === "error" || j.status === "background");
+  const allDone = started && jobs.every((j) => j.status !== "pending" && j.status !== "processing");
 
   function updateJob(index: number, patch: Partial<Job>) {
     setJobs((prev) => prev.map((j, i) => (i === index ? { ...j, ...patch } : j)));
   }
 
-  async function pollUntilDone(jobId: string, index: number) {
-    const maxAttempts = 300; // 10 min at 2s intervals
-    let attempts = 0;
-
-    while (attempts < maxAttempts) {
-      attempts++;
-      await new Promise((r) => setTimeout(r, 2000));
-
-      try {
-        const job = await pollJob(jobId);
-
-        if (job.status === "complete" && job.contact_id) {
-          let name: string | undefined;
-          try {
-            const db = getBrowserClient();
-            const { data } = await db
-              .from("crm_contacts")
-              .select("name")
-              .eq("id", job.contact_id)
-              .single();
-            name = (data as { name?: string } | null)?.name;
-          } catch { /* name stays undefined */ }
-
-          updateJob(index, { status: "done", contactId: job.contact_id, contactName: name });
-          return;
-        }
-
-        if (job.status === "failed") {
-          updateJob(index, { status: "error", error: job.error_message ?? "Processing failed" });
-          return;
-        }
-      } catch { /* polling error — keep trying */ }
-    }
-
-    // Timed out — job is still running in background
-    updateJob(index, {
-      status: "background",
-      error: "Still processing — check the dashboard in a few minutes.",
-    });
-  }
-
   async function start() {
     const urls = parseUrls();
-    if (!urls.length) return;
+    if (!urls.length || running) return;
 
     setRunning(true);
     setStartError("");
 
-    // Create all jobs and fire one background function in a single request
-    let jobMappings: { url: string; jobId: string | null; error?: string }[];
-    try {
-      const res = await fetch("/api/ingest-bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setStartError(data.error ?? `Server error (${res.status}) — try again`);
-        setRunning(false);
-        return;
-      }
-      jobMappings = data.jobs;
-    } catch {
-      setStartError("Network error — check your connection and try again");
-      setRunning(false);
-      return;
-    }
-
-    // Set initial state for all jobs
-    const initial: Job[] = jobMappings.map((j) => ({
-      url: j.url,
-      jobId: j.jobId,
-      status: j.jobId ? "processing" : "error",
-      error: j.error,
-    }));
+    const initial: Job[] = urls.map((url) => ({ url, status: "pending" }));
     setJobs(initial);
 
-    // Poll all jobs in parallel — they process sequentially on the server,
-    // but we watch all of them simultaneously from the browser
-    await Promise.all(
-      jobMappings
-        .filter((j) => j.jobId !== null)
-        .map((j, i) => {
-          const originalIndex = jobMappings.indexOf(j);
-          return pollUntilDone(j.jobId!, originalIndex);
-        })
-    );
+    for (let i = 0; i < urls.length; i++) {
+      updateJob(i, { status: "processing" });
+
+      try {
+        const res = await fetch("/api/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ youtube_url: urls[i] }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.status === 409) {
+          updateJob(i, { status: "error", error: data.error ?? "Already exists" });
+          continue;
+        }
+
+        if (res.status === 422 && data.no_captions) {
+          updateJob(i, { status: "needs_transcript", error: "No captions — add manually via single upload" });
+          continue;
+        }
+
+        if (!res.ok) {
+          updateJob(i, { status: "error", error: data.error ?? `Server error (${res.status})` });
+          continue;
+        }
+
+        updateJob(i, { status: "done", contactId: data.contact_id, contactName: data.name });
+      } catch {
+        updateJob(i, { status: "error", error: "Network error — try again" });
+      }
+    }
 
     setRunning(false);
   }
@@ -148,7 +100,7 @@ export default function BulkUpload() {
         <div className="mb-10">
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Bulk Upload</h1>
           <p className="text-sm text-gray-500 mt-2">
-            Paste multiple YouTube URLs — one per line. We&apos;ll process them in order and build each profile automatically.
+            Paste multiple YouTube URLs — one per line. We&apos;ll process them in order, one at a time.
           </p>
         </div>
 
@@ -158,20 +110,24 @@ export default function BulkUpload() {
               <label className="block text-xs font-medium text-gray-500 mb-2">YouTube URLs</label>
               <textarea
                 value={raw}
-                onChange={(e) => setRaw(e.target.value)}
+                onChange={(e) => { setRaw(e.target.value); setStartError(""); }}
                 placeholder={"https://youtube.com/watch?v=...\nhttps://youtube.com/watch?v=...\nhttps://youtu.be/..."}
                 rows={10}
                 className="w-full text-sm border border-gray-200 rounded-lg px-4 py-3 text-gray-700 placeholder-gray-300 focus:outline-none focus:border-gray-400 resize-none font-mono"
               />
               {validCount > 0 && (
-                <p className="text-xs text-gray-400 mt-1.5">{validCount} valid URL{validCount !== 1 ? "s" : ""} detected</p>
+                <p className="text-xs text-gray-400 mt-1.5">
+                  {validCount} valid URL{validCount !== 1 ? "s" : ""} detected
+                </p>
               )}
             </div>
+
             {startError && (
               <div className="p-3 bg-red-50 border border-red-100 rounded-lg">
                 <p className="text-sm text-red-600">{startError}</p>
               </div>
             )}
+
             <button
               onClick={start}
               disabled={validCount === 0 || running}
@@ -189,6 +145,9 @@ export default function BulkUpload() {
                 <StatusDot status={job.status} />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs text-gray-400 truncate font-mono">{job.url}</p>
+                  {job.status === "pending" && (
+                    <p className="text-xs text-gray-400 mt-0.5">Waiting...</p>
+                  )}
                   {job.status === "processing" && (
                     <p className="text-xs text-gray-500 mt-0.5">Transcribing and analyzing...</p>
                   )}
@@ -208,12 +167,18 @@ export default function BulkUpload() {
                   {job.status === "error" && (
                     <p className="text-xs text-red-500 mt-0.5">{job.error}</p>
                   )}
-                  {job.status === "background" && (
-                    <p className="text-xs text-yellow-600 mt-0.5">Still processing — check the dashboard in a few minutes.</p>
+                  {job.status === "needs_transcript" && (
+                    <p className="text-xs text-yellow-600 mt-0.5">{job.error}</p>
                   )}
                 </div>
               </div>
             ))}
+
+            {running && (
+              <p className="text-xs text-gray-400 pt-1">
+                Keep this tab open — processing one at a time. Each episode takes 15–25 seconds.
+              </p>
+            )}
 
             {allDone && (
               <div className="pt-4 flex items-center justify-between">
@@ -236,12 +201,6 @@ export default function BulkUpload() {
                 </div>
               </div>
             )}
-
-            {running && (
-              <p className="text-xs text-gray-400 pt-2">
-                Processing sequentially on our servers — safe to navigate away. Contacts will appear in the dashboard as they complete.
-              </p>
-            )}
           </div>
         )}
       </main>
@@ -252,7 +211,7 @@ export default function BulkUpload() {
 function StatusDot({ status }: { status: JobStatus }) {
   if (status === "done") return <span className="mt-1 w-2 h-2 rounded-full bg-green-500 shrink-0" />;
   if (status === "error") return <span className="mt-1 w-2 h-2 rounded-full bg-red-400 shrink-0" />;
-  if (status === "background") return <span className="mt-1 w-2 h-2 rounded-full bg-yellow-400 shrink-0" />;
+  if (status === "needs_transcript") return <span className="mt-1 w-2 h-2 rounded-full bg-yellow-400 shrink-0" />;
   if (status === "processing") return <span className="mt-1 w-2 h-2 rounded-full bg-black animate-pulse shrink-0" />;
   return <span className="mt-1 w-2 h-2 rounded-full bg-gray-200 shrink-0" />;
 }
