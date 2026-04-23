@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { getBrowserClient } from "@/lib/supabase-browser";
 
 type JobStatus = "pending" | "processing" | "done" | "error" | "needs_transcript";
 
@@ -32,6 +33,20 @@ export default function BulkUpload() {
 
   function updateJob(index: number, patch: Partial<Job>) {
     setJobs((prev) => prev.map((j, i) => (i === index ? { ...j, ...patch } : j)));
+  }
+
+  async function checkIfCreated(url: string): Promise<{ id: string; name: string } | null> {
+    try {
+      const db = getBrowserClient();
+      const { data } = await db
+        .from("crm_contacts")
+        .select("id, name")
+        .eq("episode_url", url)
+        .maybeSingle();
+      return data as { id: string; name: string } | null;
+    } catch {
+      return null;
+    }
   }
 
   async function start() {
@@ -67,13 +82,25 @@ export default function BulkUpload() {
         }
 
         if (!res.ok) {
-          updateJob(i, { status: "error", error: data.error ?? `Server error (${res.status})` });
+          // 504 means Netlify timed out, but the contact may have been saved anyway
+          const created = await checkIfCreated(urls[i]);
+          if (created) {
+            updateJob(i, { status: "done", contactId: created.id, contactName: created.name });
+          } else {
+            updateJob(i, { status: "error", error: data.error ?? `Server error (${res.status})` });
+          }
           continue;
         }
 
         updateJob(i, { status: "done", contactId: data.contact_id, contactName: data.name });
       } catch {
-        updateJob(i, { status: "error", error: "Network error — try again" });
+        // Network error — still check if it saved before failing
+        const created = await checkIfCreated(urls[i]);
+        if (created) {
+          updateJob(i, { status: "done", contactId: created.id, contactName: created.name });
+        } else {
+          updateJob(i, { status: "error", error: "Network error — try again" });
+        }
       }
     }
 

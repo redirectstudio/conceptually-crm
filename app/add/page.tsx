@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { getBrowserClient } from "@/lib/supabase-browser";
 
 type Step = "idle" | "processing" | "done" | "error" | "needs_transcript";
 
@@ -40,6 +41,18 @@ export default function AddContact() {
         }
         if (res.status === 422 && data.no_captions) {
           setStep("needs_transcript");
+          return;
+        }
+        // 504 timeout — check if contact was saved before Netlify cut the connection
+        const db = getBrowserClient();
+        const { data: created } = await db
+          .from("crm_contacts")
+          .select("id")
+          .eq("episode_url", url.trim())
+          .maybeSingle();
+        if (created?.id) {
+          setStep("done");
+          setTimeout(() => router.push(`/contacts/${created.id}`), 800);
           return;
         }
         setStep("error");
