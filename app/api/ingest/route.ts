@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { fetchTranscript } from "@/lib/transcript";
 import { extractProfileFromTranscript } from "@/lib/claude";
 
-const MAX_TRANSCRIPT_CHARS = 25000;
+const MAX_TRANSCRIPT_CHARS = 15000;
 
 function getServiceClient() {
   return createClient(
