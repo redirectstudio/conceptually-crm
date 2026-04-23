@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { pollJob } from "@/lib/supabase-browser";
 
 type Step = "idle" | "transcribing" | "analyzing" | "saving" | "done" | "error" | "needs_transcript";
 
@@ -18,12 +19,7 @@ export default function AddContact() {
 
   async function submit(useManual = false) {
     setError("");
-
-    if (!useManual) setStep("transcribing");
-    else setStep("analyzing");
-
-    const t1 = !useManual ? setTimeout(() => setStep("analyzing"), 4000) : null;
-    const t2 = setTimeout(() => setStep("saving"), useManual ? 3000 : 12000);
+    setStep(useManual ? "analyzing" : "transcribing");
 
     try {
       const body: Record<string, string> = { youtube_url: url.trim() };
@@ -35,15 +31,12 @@ export default function AddContact() {
         body: JSON.stringify(body),
       });
 
-      if (t1) clearTimeout(t1);
-      clearTimeout(t2);
-
       const data = await res.json();
 
       if (!res.ok) {
-        // Transcript fetch failed — offer manual paste
-        if (data.error?.includes("transcript") || data.error?.includes("caption")) {
-          setStep("needs_transcript");
+        if (res.status === 409) {
+          setStep("error");
+          setError(data.error);
           return;
         }
         setStep("error");
@@ -51,11 +44,50 @@ export default function AddContact() {
         return;
       }
 
-      setStep("done");
-      setTimeout(() => router.push(`/contacts/${data.contact.id}`), 800);
+      const { jobId } = data;
+
+      // Poll Supabase for job completion
+      let attempts = 0;
+      const maxAttempts = 300; // 10 min at 2s intervals
+
+      const poll = async (): Promise<void> => {
+        if (attempts >= maxAttempts) {
+          setStep("error");
+          setError("Still processing in the background — check the dashboard in a few minutes for your new contact.");
+          return;
+        }
+
+        attempts++;
+        const job = await pollJob(jobId);
+
+        if (job.status === "processing") {
+          setStep("analyzing");
+        }
+
+        if (job.status === "complete" && job.contact_id) {
+          setStep("done");
+          setTimeout(() => router.push(`/contacts/${job.contact_id}`), 800);
+          return;
+        }
+
+        if (job.status === "failed") {
+          const msg = job.error_message ?? "Processing failed.";
+          if (msg.toLowerCase().includes("transcript") || msg.toLowerCase().includes("caption")) {
+            setStep("needs_transcript");
+          } else {
+            setStep("error");
+            setError(msg);
+          }
+          return;
+        }
+
+        // Still pending or processing — check again in 2s
+        await new Promise((r) => setTimeout(r, 2000));
+        return poll();
+      };
+
+      await poll();
     } catch {
-      if (t1) clearTimeout(t1);
-      clearTimeout(t2);
       setStep("error");
       setError("Network error — please try again.");
     }
@@ -112,7 +144,6 @@ export default function AddContact() {
           )}
         </form>
 
-        {/* Progress */}
         {isProcessing && (
           <div className="mt-8 space-y-3">
             {[
@@ -128,7 +159,6 @@ export default function AddContact() {
           </div>
         )}
 
-        {/* Manual transcript fallback */}
         {step === "needs_transcript" && (
           <div className="mt-6 space-y-4">
             <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">

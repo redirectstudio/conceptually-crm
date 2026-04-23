@@ -1,3 +1,5 @@
+import { YoutubeTranscript } from "youtube-transcript";
+
 export interface TranscriptResult {
   text: string;
   title?: string;
@@ -35,6 +37,19 @@ export async function fetchTranscript(youtubeUrl: string): Promise<TranscriptRes
     throw new Error("Invalid YouTube URL — could not extract video ID");
   }
 
+  // 1. Try youtube-transcript first — free, no quota, pulls directly from YouTube captions
+  try {
+    const segments = await YoutubeTranscript.fetchTranscript(youtubeUrl);
+    const text = segments.map((s) => s.text).join(" ").trim();
+    if (text) {
+      const title = await fetchYouTubeTitle(youtubeUrl);
+      return { text, title, videoId };
+    }
+  } catch {
+    // Captions unavailable or disabled — fall through to Supadata
+  }
+
+  // 2. Fall back to Supadata for videos without captions (uses audio transcription)
   const apiKey = process.env.SUPADATA_API_KEY;
   if (!apiKey) {
     throw new Error("SUPADATA_API_KEY is not set");
